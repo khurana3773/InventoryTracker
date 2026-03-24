@@ -68,14 +68,28 @@ function showSettingsDialog() {
 }
 
 // ============================================
+// CONSTANTS
+// ============================================
+
+const COLUMN_NONPERISHABLE = 13;  // Column N
+const COLUMN_STATUS = 14;          // Column O
+const COLUMN_UPDATED = 15;         // Column P
+
+// ============================================
 // CORE INVENTORY FUNCTIONS
 // ============================================
+
+function normalizeBoolean(value) {
+  if (typeof value === 'boolean') return value;
+  if (value === 'on' || value === 'TRUE' || value === 'true') return true;
+  return false;
+}
 
 function getInventoryItems() {
   const sheet = SS.getSheetByName(INVENTORY_SHEET);
   const data = sheet.getDataRange().getValues();
   const items = [];
-  
+
   for (let i = 1; i < data.length; i++) {
     if (data[i][0]) {
       items.push({
@@ -84,7 +98,8 @@ function getInventoryItems() {
         category: data[i][2],
         unit: data[i][3],
         currentStock: data[i][4],
-        reorderLevel: data[i][5]
+        reorderLevel: data[i][5],
+        nonPerishable: data[i][COLUMN_NONPERISHABLE] === true
       });
     }
   }
@@ -125,7 +140,7 @@ function addNewItem(itemData) {
   const newId = 'INV-' + String(lastRow).padStart(4, '0');
   const lowPct = getSettingValue('Low Stock Alert %') || 20;
   const criticalPct = getSettingValue('Critical Stock Alert %') || 10;
-  const nonPerishable = itemData.nonPerishable === 'TRUE' || itemData.nonPerishable === true;
+  const nonPerishable = itemData.nonPerishable === 'on' || itemData.nonPerishable === 'TRUE' || itemData.nonPerishable === true;
   const newRow = [
     newId,                         // A
     itemData.name,                 // B
@@ -138,9 +153,9 @@ function addNewItem(itemData) {
     '=E' + (lastRow+1) + '*H' + (lastRow+1), // I total value
     itemData.supplier,             // J
     itemData.location,             // K
-    itemData.expiryDate || '',     // L expiry
-    itemData.expiryDate ? '=L' + (lastRow+1) + '-TODAY()' : '', // M days
-    nonPerishable,                 // N new checkbox
+    nonPerishable ? '' : (itemData.expiryDate || ''),     // L expiry (empty if non-perishable)
+    nonPerishable ? '' : (itemData.expiryDate ? '=L' + (lastRow+1) + '-TODAY()' : ''), // M days (empty if non-perishable)
+    nonPerishable,                 // N non-perishable flag
     '',                            // O status
     new Date()                     // P updated
   ];
@@ -160,16 +175,18 @@ function processStockIn(data) {
   const inventoryData = inventorySheet.getDataRange().getValues();
   let itemRow = -1;
   let itemName = '';
+  let nonPerishable = false;
   for (let i = 1; i < inventoryData.length; i++) {
     if (inventoryData[i][0] === data.itemId) {
       itemRow = i + 1;
       itemName = inventoryData[i][1];
+      nonPerishable = inventoryData[i][13] === true; // column N
       break;
     }
   }
   if (itemRow === -1) throw new Error('Item not found: ' + data.itemId);
   const qty = parseFloat(data.quantity);
-  const expiryDate = data.expiryDate ? new Date(data.expiryDate) : '';
+  const expiryDate = (nonPerishable || !data.expiryDate) ? '' : new Date(data.expiryDate);
   const now = new Date();
   // --- Update Inventory aggregate ---
   const currentStock = inventorySheet.getRange(itemRow, 5).getValue();
@@ -784,13 +801,14 @@ function applyInventoryStatusColors() {
 function getStockInHtml() {
   const items = getInventoryItems();
   const suppliers = getSuppliers();
-  
-  let itemOptions = items.map(item => 
-    `<option value="${item.id}">${item.name} (${item.currentStock} ${item.unit})</option>`
+
+  let itemOptions = items.map(item =>
+    `<option value="${item.id}" data-non-perishable="${item.nonPerishable}">${item.name} (${item.currentStock} ${item.unit})</option>`
   ).join('');
-  
+
   let supplierOptions = suppliers.map(s => `<option value="${s}">${s}</option>`).join('');
-  
+  let itemsData = JSON.stringify(items.reduce((acc, item) => { acc[item.id] = item.nonPerishable; return acc; }, {}));
+
   return `
     <!DOCTYPE html>
     <html>
@@ -804,13 +822,15 @@ function getStockInHtml() {
         button:hover { background: #3367d6; }
         .cancel { background: #ccc; color: #333; }
         .required::after { content: " *"; color: red; }
+        #expiryDateGroup { transition: opacity 0.3s; }
+        #expiryDateGroup.hidden { opacity: 0.5; pointer-events: none; }
       </style>
     </head>
     <body>
       <form id="stockInForm">
         <div class="form-group">
           <label class="required">Item</label>
-          <select name="itemId" required>
+          <select name="itemId" id="itemSelect" required>
             <option value="">-- Select Item --</option>
             ${itemOptions}
           </select>
@@ -834,9 +854,9 @@ function getStockInHtml() {
           <label>Invoice #</label>
           <input type="text" name="invoiceNo">
         </div>
-        <div class="form-group">
+        <div class="form-group" id="expiryDateGroup">
           <label>Expiry Date</label>
-          <input type="date" name="expiryDate">
+          <input type="date" name="expiryDate" id="expiryDateInput">
         </div>
         <div class="form-group">
           <label>Received By</label>
@@ -850,9 +870,35 @@ function getStockInHtml() {
         <button type="button" class="cancel" onclick="google.script.host.close()">Cancel</button>
       </form>
       <script>
+        const itemsData = ${itemsData};
+        const itemSelect = document.getElementById('itemSelect');
+        const expiryDateGroup = document.getElementById('expiryDateGroup');
+        const expiryDateInput = document.getElementById('expiryDateInput');
+
+        // Handle item selection
+        itemSelect.addEventListener('change', function() {
+          const selectedItemId = this.value;
+          const isNonPerishable = itemsData[selectedItemId] || false;
+
+          if (isNonPerishable) {
+            expiryDateGroup.classList.add('hidden');
+            expiryDateInput.value = '';
+          } else {
+            expiryDateGroup.classList.remove('hidden');
+          }
+        });
+
         document.getElementById('stockInForm').addEventListener('submit', function(e) {
           e.preventDefault();
+          const selectedItemId = itemSelect.value;
+          const isNonPerishable = itemsData[selectedItemId] || false;
+
           const formData = new FormData(this);
+          // Clear expiry date if item is non-perishable
+          if (isNonPerishable) {
+            formData.set('expiryDate', '');
+          }
+
           const data = Object.fromEntries(formData.entries());
           google.script.run
             .withSuccessHandler(() => {
@@ -972,10 +1018,10 @@ function getStockOutHtml() {
 function getNewItemHtml() {
   const categories = getCategories();
   const suppliers = getSuppliers();
-  
+
   let categoryOptions = categories.map(c => `<option value="${c}">${c}</option>`).join('');
   let supplierOptions = suppliers.map(s => `<option value="${s}">${s}</option>`).join('');
-  
+
   return `
     <!DOCTYPE html>
     <html>
@@ -990,6 +1036,11 @@ function getNewItemHtml() {
         .cancel { background: #ccc; color: #333; }
         .required::after { content: " *"; color: red; }
         .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; }
+        .checkbox-group { display: flex; align-items: center; }
+        .checkbox-group input[type="checkbox"] { width: auto; margin-right: 8px; cursor: pointer; }
+        .checkbox-group label { display: inline; margin-bottom: 0; }
+        #expiryDateGroup { transition: opacity 0.3s; }
+        #expiryDateGroup.hidden { opacity: 0.5; pointer-events: none; }
       </style>
     </head>
     <body>
@@ -1050,7 +1101,11 @@ function getNewItemHtml() {
           <label>Storage Location</label>
           <input type="text" name="location" placeholder="e.g., Fridge 1, Shelf A3">
         </div>
-        <div class="form-group">
+        <div class="checkbox-group">
+          <input type="checkbox" id="nonPerishableCheckbox" name="nonPerishable">
+          <label for="nonPerishableCheckbox">Non-Perishable Item</label>
+        </div>
+        <div class="form-group" id="expiryDateGroup">
           <label>Expiry Date</label>
           <input type="date" name="expiryDate">
         </div>
@@ -1058,6 +1113,19 @@ function getNewItemHtml() {
         <button type="button" class="cancel" onclick="google.script.host.close()">Cancel</button>
       </form>
       <script>
+        const nonPerishableCheckbox = document.getElementById('nonPerishableCheckbox');
+        const expiryDateGroup = document.getElementById('expiryDateGroup');
+
+        // Handle checkbox change
+        nonPerishableCheckbox.addEventListener('change', function() {
+          if (this.checked) {
+            expiryDateGroup.classList.add('hidden');
+            document.querySelector('input[name="expiryDate"]').value = '';
+          } else {
+            expiryDateGroup.classList.remove('hidden');
+          }
+        });
+
         document.getElementById('newItemForm').addEventListener('submit', function(e) {
           e.preventDefault();
           const formData = new FormData(this);
