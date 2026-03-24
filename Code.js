@@ -140,7 +140,7 @@ function addNewItem(itemData) {
   const newId = 'INV-' + String(lastRow).padStart(4, '0');
   const lowPct = getSettingValue('Low Stock Alert %') || 20;
   const criticalPct = getSettingValue('Critical Stock Alert %') || 10;
-  const nonPerishable = itemData.nonPerishable === 'on' || itemData.nonPerishable === 'TRUE' || itemData.nonPerishable === true;
+  const nonPerishable = normalizeBoolean(itemData.nonPerishable);
   const newRow = [
     newId,                         // A
     itemData.name,                 // B
@@ -180,18 +180,19 @@ function processStockIn(data) {
     if (inventoryData[i][0] === data.itemId) {
       itemRow = i + 1;
       itemName = inventoryData[i][1];
-      nonPerishable = inventoryData[i][13] === true; // column N
+      nonPerishable = inventoryData[i][COLUMN_NONPERISHABLE] === true;
       break;
     }
   }
   if (itemRow === -1) throw new Error('Item not found: ' + data.itemId);
   const qty = parseFloat(data.quantity);
+  if (isNaN(qty) || qty <= 0) throw new Error('Invalid quantity. Must be a positive number.');
   const expiryDate = (nonPerishable || !data.expiryDate) ? '' : new Date(data.expiryDate);
   const now = new Date();
   // --- Update Inventory aggregate ---
   const currentStock = inventorySheet.getRange(itemRow, 5).getValue();
   inventorySheet.getRange(itemRow, 5).setValue(currentStock + qty);
-  inventorySheet.getRange(itemRow, 15).setValue(now);
+  inventorySheet.getRange(itemRow, COLUMN_UPDATED).setValue(now);
   // --- Record in Stock In sheet ---
   stockInSheet.appendRow([
     now,
@@ -247,12 +248,13 @@ function processStockOut(data) {
   if (itemRow === -1) throw new Error('Item not found.');
 
   const usageQty = parseFloat(data.quantity);
+  if (isNaN(usageQty) || usageQty <= 0) throw new Error('Invalid quantity. Must be a positive number.');
   const today = new Date();
 
   // Deduct from the selected batch
   const batchesData = batchesSheet.getDataRange().getValues();
   const batchRow = batchesData.findIndex(r => r[0] === data.batchId);
-  if (batchRow < 1) throw new Error('Selected batch not found.');
+  if (batchRow === -1) throw new Error('Selected batch not found.');
   const batch = batchesData[batchRow];
   const available = parseFloat(batch[3]);
 
@@ -262,7 +264,7 @@ function processStockOut(data) {
   // Update inventory
   const invStock = inventorySheet.getRange(itemRow, 5).getValue();
   inventorySheet.getRange(itemRow, 5).setValue(invStock - usageQty);
-  inventorySheet.getRange(itemRow, 15).setValue(today);
+  inventorySheet.getRange(itemRow, COLUMN_UPDATED).setValue(today);
 
   // Log usage
   stockOutSheet.appendRow([
@@ -274,6 +276,8 @@ function processStockOut(data) {
     data.orderNo || '',
     data.recordedBy || `Batch: ${data.batchId}`
   ]);
+
+  return true;
 }
 
 
@@ -301,7 +305,7 @@ function recalculateAllStock() {
     if (id) {
       const stock = totals[id] || 0;
       inventorySheet.getRange(i + 1, 5).setValue(stock);
-      inventorySheet.getRange(i + 1, 15).setValue(new Date());
+      inventorySheet.getRange(i + 1, COLUMN_UPDATED).setValue(new Date());
       updateInventoryStatusForItem(id);
     }
   }
@@ -359,17 +363,18 @@ function updateDashboard() {
     if (inventoryData[i][0]) {
       totalItems++;
       totalValue += parseFloat(inventoryData[i][8]) || 0;
-      
-      const status = inventoryData[i][13];
+
+      const status = inventoryData[i][COLUMN_STATUS];
       if (status === 'LOW') lowStockItems++;
       if (status === 'CRITICAL' || status === 'OUT') criticalItems++;
       if (status === 'EXPIRED') expiredItems++;
-      
+
       const daysToExpiry = inventoryData[i][12];
-      if (daysToExpiry && daysToExpiry > 0 && daysToExpiry <= warningDays) {
+      const isNonPerishable = inventoryData[i][COLUMN_NONPERISHABLE] === true;
+      if (!isNonPerishable && daysToExpiry && daysToExpiry > 0 && daysToExpiry <= warningDays) {
         expiringItems++;
       }
-      
+
       const category = inventoryData[i][2] || 'Uncategorized';
       if (!categoryBreakdown[category]) {
         categoryBreakdown[category] = { count: 0, value: 0 };
@@ -434,7 +439,7 @@ function generateLowStockReport() {
   
   let count = 0;
   for (let i = 1; i < data.length; i++) {
-    const status = data[i][13];
+    const status = data[i][COLUMN_STATUS];
     if (status === 'LOW' || status === 'CRITICAL' || status === 'OUT') {
       count++;
       report += `${data[i][1]} (${data[i][0]})\n`;
@@ -468,6 +473,8 @@ function generateExpiryReport() {
   const expiringSoon = [];
   
   for (let i = 1; i < data.length; i++) {
+    const isNonPerishable = data[i][COLUMN_NONPERISHABLE] === true;
+    if (isNonPerishable) continue; // Skip non-perishable items
     const daysToExpiry = data[i][12];
     if (daysToExpiry !== '' && daysToExpiry !== null) {
       if (daysToExpiry < 0) {
@@ -596,13 +603,14 @@ function sendAlertEmail() {
   
   for (let i = 1; i < data.length; i++) {
     if (data[i][0]) {
-      const status = data[i][13];
+      const status = data[i][COLUMN_STATUS];
       const daysToExpiry = data[i][12];
-      
+      const isNonPerishable = data[i][COLUMN_NONPERISHABLE] === true;
+
       if (status === 'LOW') lowStock.push(data[i][1]);
       if (status === 'CRITICAL' || status === 'OUT') critical.push(data[i][1]);
       if (status === 'EXPIRED') expired.push(data[i][1]);
-      if (daysToExpiry > 0 && daysToExpiry <= warningDays) expiring.push(`${data[i][1]} (${daysToExpiry} days)`);
+      if (!isNonPerishable && daysToExpiry > 0 && daysToExpiry <= warningDays) expiring.push(`${data[i][1]} (${daysToExpiry} days)`);
     }
   }
   
@@ -714,24 +722,32 @@ function updateInventoryStatusForItem(itemId) {
   for (let i = 1; i < invData.length; i++) {
     if (invData[i][0] === itemId) {
       invRow = i + 1;
-      nonPerishable = invData[i][13] === true; // column N
+      nonPerishable = invData[i][COLUMN_NONPERISHABLE] === true;
       break;
     }
   }
   if (invRow === -1) return;
 
   if (nonPerishable) {
-    invSheet.getRange(invRow, 14).setValue(true);
-    invSheet.getRange(invRow, 15).setValue('N/A'); // Status
+    invSheet.getRange(invRow, COLUMN_NONPERISHABLE + 1).setValue(true);  // Column N checkbox
+    invSheet.getRange(invRow, COLUMN_STATUS + 1).setValue('N/A');        // Column O status
     return;
   }
 
-  // find active batches
-  const itemBatches = batches.filter((r,i)=> i>0 && r[1]===itemId && parseFloat(r[3])>0 && r[5]);
+  // find active batches for perishable items
+  const itemBatches = batches.filter((r, i) => {
+    if (i === 0) return false; // Skip header
+    if (r[1] !== itemId) return false;
+    const qty = parseFloat(r[3]);
+    if (isNaN(qty) || qty <= 0) return false;
+    if (!r[5]) return false; // No expiry date
+    return true;
+  });
+
   if (itemBatches.length === 0) {
     invSheet.getRange(invRow, 12).setValue('');
     invSheet.getRange(invRow, 13).setValue('');
-    invSheet.getRange(invRow, 15).setValue('OUT');
+    invSheet.getRange(invRow, COLUMN_STATUS + 1).setValue('OUT');
     return;
   }
 
@@ -739,10 +755,10 @@ function updateInventoryStatusForItem(itemId) {
   const expiryDates = itemBatches
     .map(b => new Date(b[5]))
     .filter(d => d instanceof Date && !isNaN(d))
-    .sort((a,b)=>a-b);
+    .sort((a, b) => a - b);
 
   const earliest = expiryDates[0];
-  const days = Math.floor((earliest - today)/(1000*3600*24));
+  const days = Math.floor((earliest - today) / (1000 * 3600 * 24));
 
   let status = 'OK';
   if (days < 0) status = 'EXPIRED';
@@ -750,7 +766,7 @@ function updateInventoryStatusForItem(itemId) {
 
   invSheet.getRange(invRow, 12).setValue(earliest);
   invSheet.getRange(invRow, 13).setValue(days);
-  invSheet.getRange(invRow, 15).setValue(status);
+  invSheet.getRange(invRow, COLUMN_STATUS + 1).setValue(status);
 }
 
 
@@ -777,8 +793,8 @@ function applyBatchStatusColors() {
 
 function applyInventoryStatusColors() {
   const sheet = SS.getSheetByName('Inventory');
-  const statusCol = 15; // column O
-  const range = sheet.getRange(2, statusCol, sheet.getLastRow()-1);
+  const statusCol = COLUMN_STATUS + 1;  // 1-indexed for Google Sheets
+  const range = sheet.getRange(2, statusCol, sheet.getLastRow() - 1);
   const rules = [
     SpreadsheetApp.newConditionalFormatRule().whenTextEqualTo('OK')
       .setBackground('#d4edda').setFontColor('#155724').setRanges([range]).build(),
@@ -788,6 +804,8 @@ function applyInventoryStatusColors() {
       .setBackground('#f8d7da').setFontColor('#721c24').setRanges([range]).build(),
     SpreadsheetApp.newConditionalFormatRule().whenTextEqualTo('OUT')
       .setBackground('#e2e3e5').setFontColor('#383d41').setRanges([range]).build(),
+    SpreadsheetApp.newConditionalFormatRule().whenTextEqualTo('N/A')
+      .setBackground('#f0f0f0').setFontColor('#666666').setRanges([range]).build(),
   ];
   sheet.setConditionalFormatRules(rules);
 }
@@ -996,7 +1014,24 @@ function getStockOutHtml() {
         const batches = batchData[this.value] || [];
         const batchSelect = document.getElementById('batchSelect');
         const batchDiv = document.getElementById('batchDiv');
-        batchSelect.innerHTML = batches.length ? batches.map(b => '<option value="'+b.split(' | ')[0]+'">'+b+'</option>').join('') : '<option value="">(No available batch)</option>';
+
+        // Clear and rebuild options using safe DOM methods
+        batchSelect.innerHTML = '';
+        batches.forEach(b => {
+          const batchId = b.split(' | ')[0];
+          const option = document.createElement('option');
+          option.value = batchId;
+          option.textContent = b;
+          batchSelect.appendChild(option);
+        });
+
+        if (batches.length === 0) {
+          const option = document.createElement('option');
+          option.value = '';
+          option.textContent = '(No available batch)';
+          batchSelect.appendChild(option);
+        }
+
         batchDiv.style.display = batches.length ? 'block' : 'none';
       });
 
