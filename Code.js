@@ -96,6 +96,15 @@ const COLUMN_LAST_UPDATED = 16;   // Column Q
 // CORE INVENTORY FUNCTIONS
 // ============================================
 
+/**
+ * Converts 0-based column index to 1-based for Google Sheets API
+ * @param {number} zeroBasedIndex - The 0-based column index
+ * @returns {number} The 1-based column index for sheet APIs
+ */
+function getSheetColumnIndex(zeroBasedIndex) {
+  return zeroBasedIndex + 1;
+}
+
 function normalizeBoolean(value) {
   if (typeof value === 'boolean') return value;
   if (value === 'on' || value === 'TRUE' || value === 'true') return true;
@@ -108,14 +117,14 @@ function getInventoryItems() {
   const items = [];
 
   for (let i = 1; i < data.length; i++) {
-    if (data[i][COLUMN_ITEM_ID]) {
+    if (data[i][0]) {
       items.push({
-        id: data[i][COLUMN_ITEM_ID],
-        name: data[i][COLUMN_NAME],
-        category: data[i][COLUMN_CATEGORY],
-        unit: data[i][COLUMN_UNIT],
-        currentStock: data[i][COLUMN_CURRENT_STOCK],
-        reorderLevel: data[i][COLUMN_REORDER_LEVEL],
+        id: data[i][0],
+        name: data[i][1],
+        category: data[i][2],
+        unit: data[i][3],
+        currentStock: data[i][4],
+        reorderLevel: data[i][5],
         nonPerishable: data[i][COLUMN_NONPERISHABLE] === true
       });
     }
@@ -158,26 +167,27 @@ function addNewItem(itemData) {
   const lowPct = getSettingValue('Low Stock Alert %') || 20;
   const criticalPct = getSettingValue('Critical Stock Alert %') || 10;
   const nonPerishable = normalizeBoolean(itemData.nonPerishable);
-  const newRow = [];
-  newRow[COLUMN_ITEM_ID] = newId;
-  newRow[COLUMN_NAME] = itemData.name;
-  newRow[COLUMN_CATEGORY] = itemData.category;
-  newRow[COLUMN_UNIT] = itemData.unit;
-  newRow[COLUMN_CURRENT_STOCK] = itemData.initialStock || 0;
-  newRow[COLUMN_REORDER_LEVEL] = itemData.reorderLevel;
-  newRow[COLUMN_REORDER_QTY] = itemData.reorderQty;
-  newRow[COLUMN_UNIT_COST] = itemData.unitCost;
-  newRow[COLUMN_TOTAL_VALUE] = '=E' + (lastRow + 1) + '*H' + (lastRow + 1);
-  newRow[COLUMN_SUPPLIER] = itemData.supplier;
-  newRow[COLUMN_LOCATION] = itemData.location;
-  newRow[COLUMN_EXPIRY_DATE] = nonPerishable ? '' : (itemData.expiryDate || '');
-  newRow[COLUMN_DAYS_TO_EXPIRY] = nonPerishable ? '' : (itemData.expiryDate ? '=L' + (lastRow + 1) + '-TODAY()' : '');
-  newRow[COLUMN_NONPERISHABLE] = nonPerishable;
-  newRow[COLUMN_STATUS] = '';
-  newRow[COLUMN_UPDATED] = new Date();
+  const newRow = [
+    newId,                         // A
+    itemData.name,                 // B
+    itemData.category,             // C
+    itemData.unit,                 // D
+    itemData.initialStock || 0,    // E
+    itemData.reorderLevel,         // F
+    itemData.reorderQty,           // G
+    itemData.unitCost,             // H
+    '=E' + (lastRow+1) + '*H' + (lastRow+1), // I total value
+    itemData.supplier,             // J
+    itemData.location,             // K
+    nonPerishable ? '' : (itemData.expiryDate || ''),     // L expiry (empty if non-perishable)
+    nonPerishable ? '' : (itemData.expiryDate ? '=L' + (lastRow+1) + '-TODAY()' : ''), // M days (empty if non-perishable)
+    nonPerishable,                 // N non-perishable flag
+    '',                            // O status
+    new Date()                     // P updated
+  ];
   sheet.appendRow(newRow);
   // Insert checkbox for non‑perishable column
-  const cell = sheet.getRange(lastRow + 1, COLUMN_NONPERISHABLE);
+  const cell = sheet.getRange(lastRow+1, getSheetColumnIndex(COLUMN_NONPERISHABLE));
   cell.insertCheckboxes();
   // Initial status update
   updateInventoryStatusForItem(newId);
@@ -193,9 +203,9 @@ function processStockIn(data) {
   let itemName = '';
   let nonPerishable = false;
   for (let i = 1; i < inventoryData.length; i++) {
-    if (inventoryData[i][COLUMN_ITEM_ID] === data.itemId) {
+    if (inventoryData[i][0] === data.itemId) {
       itemRow = i + 1;
-      itemName = inventoryData[i][COLUMN_NAME];
+      itemName = inventoryData[i][1];
       nonPerishable = inventoryData[i][COLUMN_NONPERISHABLE] === true;
       break;
     }
@@ -206,9 +216,9 @@ function processStockIn(data) {
   const expiryDate = (nonPerishable || !data.expiryDate) ? '' : new Date(data.expiryDate);
   const now = new Date();
   // --- Update Inventory aggregate ---
-  const currentStock = inventorySheet.getRange(itemRow, COLUMN_CURRENT_STOCK).getValue();
-  inventorySheet.getRange(itemRow, COLUMN_CURRENT_STOCK).setValue(currentStock + qty);
-  inventorySheet.getRange(itemRow, COLUMN_UPDATED).setValue(now);
+  const currentStock = inventorySheet.getRange(itemRow, getSheetColumnIndex(COLUMN_CURRENT_STOCK)).getValue();
+  inventorySheet.getRange(itemRow, getSheetColumnIndex(COLUMN_CURRENT_STOCK)).setValue(currentStock + qty);
+  inventorySheet.getRange(itemRow, getSheetColumnIndex(COLUMN_UPDATED)).setValue(now);
   // --- Record in Stock In sheet ---
   stockInSheet.appendRow([
     now,
@@ -278,9 +288,9 @@ function processStockOut(data) {
   batchesSheet.getRange(batchRow + 1, 4).setValue(available - usageQty);
 
   // Update inventory
-  const invStock = inventorySheet.getRange(itemRow, COLUMN_CURRENT_STOCK).getValue();
-  inventorySheet.getRange(itemRow, COLUMN_CURRENT_STOCK).setValue(invStock - usageQty);
-  inventorySheet.getRange(itemRow, COLUMN_UPDATED).setValue(today);
+  const invStock = inventorySheet.getRange(itemRow, getSheetColumnIndex(COLUMN_CURRENT_STOCK)).getValue();
+  inventorySheet.getRange(itemRow, getSheetColumnIndex(COLUMN_CURRENT_STOCK)).setValue(invStock - usageQty);
+  inventorySheet.getRange(itemRow, getSheetColumnIndex(COLUMN_UPDATED)).setValue(today);
 
   // Log usage
   stockOutSheet.appendRow([
@@ -317,11 +327,11 @@ function recalculateAllStock() {
   }
 
   for (let i = 1; i < inventoryData.length; i++) {
-    const id = inventoryData[i][COLUMN_ITEM_ID];
+    const id = inventoryData[i][0];
     if (id) {
       const stock = totals[id] || 0;
-      inventorySheet.getRange(i + 1, COLUMN_CURRENT_STOCK).setValue(stock);
-      inventorySheet.getRange(i + 1, COLUMN_UPDATED).setValue(new Date());
+      inventorySheet.getRange(i + 1, getSheetColumnIndex(COLUMN_CURRENT_STOCK)).setValue(stock);
+      inventorySheet.getRange(i + 1, getSheetColumnIndex(COLUMN_UPDATED)).setValue(new Date());
       updateInventoryStatusForItem(id);
     }
   }
@@ -338,10 +348,10 @@ function onEdit(e) {
   const range = e.range;
   
   // Auto-update timestamp when inventory is edited
-  if (sheet.getName() === INVENTORY_SHEET && range.getColumn() >= COLUMN_NAME && range.getColumn() <= COLUMN_DAYS_TO_EXPIRY ) {
+  if (sheet.getName() === INVENTORY_SHEET && range.getColumn() >= getSheetColumnIndex(COLUMN_NAME) && range.getColumn() <= getSheetColumnIndex(COLUMN_LOCATION)) {
     const row = range.getRow();
     if (row > 1) {
-      sheet.getRange(row, COLUMN_LAST_UPDATED).setValue(new Date());
+      sheet.getRange(row, getSheetColumnIndex(COLUMN_LAST_UPDATED)).setValue(new Date());
     }
   }
 }
@@ -376,27 +386,27 @@ function updateDashboard() {
   const warningDays = getSettingValue('Expiry Warning Days') || 7;
   
   for (let i = 1; i < inventoryData.length; i++) {
-    if (inventoryData[i][COLUMN_ITEM_ID]) {
+    if (inventoryData[i][0]) {
       totalItems++;
-      totalValue += parseFloat(inventoryData[i][COLUMN_TOTAL_VALUE]) || 0;
+      totalValue += parseFloat(inventoryData[i][8]) || 0;
 
       const status = inventoryData[i][COLUMN_STATUS];
       if (status === 'LOW') lowStockItems++;
       if (status === 'CRITICAL' || status === 'OUT') criticalItems++;
       if (status === 'EXPIRED') expiredItems++;
 
-      const daysToExpiry = inventoryData[i][COLUMN_DAYS_TO_EXPIRY];
+      const daysToExpiry = inventoryData[i][12];
       const isNonPerishable = inventoryData[i][COLUMN_NONPERISHABLE] === true;
       if (!isNonPerishable && daysToExpiry && daysToExpiry > 0 && daysToExpiry <= warningDays) {
         expiringItems++;
       }
 
-      const category = inventoryData[i][COLUMN_CATEGORY] || 'Uncategorized';
+      const category = inventoryData[i][2] || 'Uncategorized';
       if (!categoryBreakdown[category]) {
         categoryBreakdown[category] = { count: 0, value: 0 };
       }
       categoryBreakdown[category].count++;
-      categoryBreakdown[category].value += parseFloat(inventoryData[i][COLUMN_TOTAL_VALUE]) || 0;
+      categoryBreakdown[category].value += parseFloat(inventoryData[i][8]) || 0;
     }
   }
   
@@ -458,12 +468,12 @@ function generateLowStockReport() {
     const status = data[i][COLUMN_STATUS];
     if (status === 'LOW' || status === 'CRITICAL' || status === 'OUT') {
       count++;
-      report += `${data[i][COLUMN_NAME]} (${data[i][COLUMN_ITEM_ID]})\n`;
+      report += `${data[i][1]} (${data[i][0]})\n`;
       report += `  Status: ${status}\n`;
-      report += `  Current: ${data[i][COLUMN_CURRENT_STOCK]} ${data[i][COLUMN_UNIT]}\n`;
-      report += `  Reorder Level: ${data[i][COLUMN_REORDER_LEVEL]} ${data[i][COLUMN_UNIT]}\n`;
-      report += `  Suggested Order: ${data[i][COLUMN_REORDER_QTY]} ${data[i][COLUMN_UNIT]}\n`;
-      report += `  Supplier: ${data[i][COLUMN_SUPPLIER] || 'Not specified'}\n\n`;
+      report += `  Current: ${data[i][4]} ${data[i][3]}\n`;
+      report += `  Reorder Level: ${data[i][5]} ${data[i][3]}\n`;
+      report += `  Suggested Order: ${data[i][6]} ${data[i][3]}\n`;
+      report += `  Supplier: ${data[i][9] || 'Not specified'}\n\n`;
     }
   }
   
@@ -491,12 +501,12 @@ function generateExpiryReport() {
   for (let i = 1; i < data.length; i++) {
     const isNonPerishable = data[i][COLUMN_NONPERISHABLE] === true;
     if (isNonPerishable) continue; // Skip non-perishable items
-    const daysToExpiry = data[i][COLUMN_DAYS_TO_EXPIRY];
+    const daysToExpiry = data[i][12];
     if (daysToExpiry !== '' && daysToExpiry !== null) {
       if (daysToExpiry < 0) {
-        expired.push({ name: data[i][COLUMN_NAME], days: Math.abs(daysToExpiry), stock: data[i][COLUMN_CURRENT_STOCK], unit: data[i][COLUMN_UNIT] });
+        expired.push({ name: data[i][1], days: Math.abs(daysToExpiry), stock: data[i][4], unit: data[i][3] });
       } else if (daysToExpiry <= warningDays) {
-        expiringSoon.push({ name: data[i][COLUMN_NAME], days: daysToExpiry, stock: data[i][COLUMN_CURRENT_STOCK], unit: data[i][COLUMN_UNIT] });
+        expiringSoon.push({ name: data[i][1], days: daysToExpiry, stock: data[i][4], unit: data[i][3] });
       }
     }
   }
@@ -533,11 +543,11 @@ function generateValuationReport() {
   const categoryValues = {};
   
   for (let i = 1; i < data.length; i++) {
-    if (data[i][COLUMN_ITEM_ID]) {
-      const value = parseFloat(data[i][COLUMN_TOTAL_VALUE]) || 0;
+    if (data[i][0]) {
+      const value = parseFloat(data[i][8]) || 0;
       totalValue += value;
       
-      const category = data[i][COLUMN_CATEGORY] || 'Uncategorized';
+      const category = data[i][2] || 'Uncategorized';
       categoryValues[category] = (categoryValues[category] || 0) + value;
     }
   }
@@ -618,15 +628,15 @@ function sendAlertEmail() {
   const expired = [];
   
   for (let i = 1; i < data.length; i++) {
-    if (data[i][COLUMN_ITEM_ID]) {
+    if (data[i][0]) {
       const status = data[i][COLUMN_STATUS];
-      const daysToExpiry = data[i][COLUMN_DAYS_TO_EXPIRY];
+      const daysToExpiry = data[i][12];
       const isNonPerishable = data[i][COLUMN_NONPERISHABLE] === true;
 
-      if (status === 'LOW') lowStock.push(data[i][COLUMN_NAME]);
-      if (status === 'CRITICAL' || status === 'OUT') critical.push(data[i][COLUMN_NAME]);
-      if (status === 'EXPIRED') expired.push(data[i][COLUMN_NAME]);
-      if (!isNonPerishable && daysToExpiry > 0 && daysToExpiry <= warningDays) expiring.push(`${data[i][COLUMN_NAME]} (${daysToExpiry} days)`);
+      if (status === 'LOW') lowStock.push(data[i][1]);
+      if (status === 'CRITICAL' || status === 'OUT') critical.push(data[i][1]);
+      if (status === 'EXPIRED') expired.push(data[i][1]);
+      if (!isNonPerishable && daysToExpiry > 0 && daysToExpiry <= warningDays) expiring.push(`${data[i][1]} (${daysToExpiry} days)`);
     }
   }
   
@@ -736,7 +746,7 @@ function updateInventoryStatusForItem(itemId) {
 
   let invRow = -1, nonPerishable = false;
   for (let i = 1; i < invData.length; i++) {
-    if (invData[i][COLUMN_ITEM_ID] === itemId) {
+    if (invData[i][0] === itemId) {
       invRow = i + 1;
       nonPerishable = invData[i][COLUMN_NONPERISHABLE] === true;
       break;
@@ -745,8 +755,8 @@ function updateInventoryStatusForItem(itemId) {
   if (invRow === -1) return;
 
   if (nonPerishable) {
-    invSheet.getRange(invRow, COLUMN_NONPERISHABLE).setValue(true);  // Column N checkbox
-    invSheet.getRange(invRow, COLUMN_STATUS).setValue('N/A');        // Column O status
+    invSheet.getRange(invRow, getSheetColumnIndex(COLUMN_NONPERISHABLE)).setValue(true);  // Column N checkbox
+    invSheet.getRange(invRow, getSheetColumnIndex(COLUMN_STATUS)).setValue('N/A');        // Column O status
     return;
   }
 
@@ -761,9 +771,9 @@ function updateInventoryStatusForItem(itemId) {
   });
 
   if (itemBatches.length === 0) {
-    invSheet.getRange(invRow, COLUMN_EXPIRY_DATE).setValue('');
-    invSheet.getRange(invRow, COLUMN_DAYS_TO_EXPIRY).setValue('');
-    invSheet.getRange(invRow, COLUMN_STATUS).setValue('OUT');
+    invSheet.getRange(invRow, getSheetColumnIndex(COLUMN_EXPIRY_DATE)).setValue('');
+    invSheet.getRange(invRow, getSheetColumnIndex(COLUMN_DAYS_TO_EXPIRY)).setValue('');
+    invSheet.getRange(invRow, getSheetColumnIndex(COLUMN_STATUS)).setValue('OUT');
     return;
   }
 
@@ -780,9 +790,9 @@ function updateInventoryStatusForItem(itemId) {
   if (days < 0) status = 'EXPIRED';
   else if (days <= 7) status = 'EXPIRING SOON';
 
-  invSheet.getRange(invRow, COLUMN_EXPIRY_DATE).setValue(earliest);
-  invSheet.getRange(invRow, COLUMN_DAYS_TO_EXPIRY).setValue(days);
-  invSheet.getRange(invRow, COLUMN_STATUS).setValue(status);
+  invSheet.getRange(invRow, getSheetColumnIndex(COLUMN_EXPIRY_DATE)).setValue(earliest);
+  invSheet.getRange(invRow, getSheetColumnIndex(COLUMN_DAYS_TO_EXPIRY)).setValue(days);
+  invSheet.getRange(invRow, getSheetColumnIndex(COLUMN_STATUS)).setValue(status);
 }
 
 
@@ -809,7 +819,7 @@ function applyBatchStatusColors() {
 
 function applyInventoryStatusColors() {
   const sheet = SS.getSheetByName('Inventory');
-  const statusCol = COLUMN_STATUS + 1;  // 1-indexed for Google Sheets
+  const statusCol = getSheetColumnIndex(COLUMN_STATUS);
   const range = sheet.getRange(2, statusCol, sheet.getLastRow() - 1);
   const rules = [
     SpreadsheetApp.newConditionalFormatRule().whenTextEqualTo('OK')
