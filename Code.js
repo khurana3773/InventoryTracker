@@ -33,6 +33,7 @@ function onOpen() {
     .addItem('📧 Send Alert Email', 'sendAlertEmail')
     .addItem('⚙️ Settings', 'showSettingsDialog')
     .addToUi();
+  applyInventoryStockLevelColors();
 }
 
 // ============================================
@@ -103,6 +104,17 @@ const COLUMN_LAST_UPDATED = 16;   // Column Q
  */
 function getSheetColumnIndex(zeroBasedIndex) {
   return zeroBasedIndex + 1;
+}
+
+function getSheetColumnLetter(oneBasedIndex) {
+  let index = oneBasedIndex;
+  let letter = '';
+  while (index > 0) {
+    const remainder = (index - 1) % 26;
+    letter = String.fromCharCode(65 + remainder) + letter;
+    index = Math.floor((index - 1) / 26);
+  }
+  return letter;
 }
 
 function normalizeBoolean(value) {
@@ -236,7 +248,7 @@ function processStockIn(data) {
   const lastRow = batchesSheet.getLastRow();
   const batchId = 'BATCH-' + String(lastRow).padStart(4, '0');
   const daysToExpiry = expiryDate ? Math.floor((expiryDate - now) / (1000 * 3600 * 24)) : '';
-  const statusFormula = `=IF(F${lastRow + 1}<TODAY(),"EXPIRED",IF(F${lastRow + 1}-TODAY()<=7,"EXPIRING","OK"))`;
+  const statusFormula = `=IF(F${lastRow + 1}="","OK",IF(F${lastRow + 1}<TODAY(),"EXPIRED",IF(F${lastRow + 1}-TODAY()<=7,"EXPIRING","OK")))`;
   batchesSheet.appendRow([
     batchId,
     data.itemId,
@@ -313,7 +325,7 @@ function processStockOut(data) {
 
 function recalculateAllStock() {
   const inventorySheet = SS.getSheetByName(INVENTORY_SHEET);
-  const batchesSheet = SS.getSheetByName('Batches');
+  const batchesSheet = SS.getSheetByName(BATCHES_SHEET);
   const inventoryData = inventorySheet.getDataRange().getValues();
   const batchesData = batchesSheet.getDataRange().getValues();
 
@@ -336,8 +348,8 @@ function recalculateAllStock() {
     }
   }
 
-  applyBatchStatusColors();
   applyInventoryStatusColors();
+  applyInventoryStockLevelColors();
 
   SpreadsheetApp.getUi().alert('Inventory recalculated from batch data.');
 }
@@ -797,28 +809,28 @@ function updateInventoryStatusForItem(itemId) {
 
 
 
-function applyBatchStatusColors() {
-  const sheet = SS.getSheetByName('Batches');
-  const statusCol = 11; // column K
-  const range = sheet.getRange(2, statusCol, sheet.getLastRow() - 1);
+// function applyBatchStatusColors() {
+//   const sheet = SS.getSheetByName(BATCHES_SHEET);
+//   const statusCol = 11; // column K
+//   const range = sheet.getRange(2, statusCol, sheet.getLastRow() - 1);
 
-  const rules = [
-    SpreadsheetApp.newConditionalFormatRule()
-      .whenTextEqualTo('EXPIRED').setBackground('#f8d7da').setFontColor('#721c24')
-      .setRanges([range]).build(),
-    SpreadsheetApp.newConditionalFormatRule()
-      .whenTextEqualTo('EXPIRING').setBackground('#fff3cd').setFontColor('#856404')
-      .setRanges([range]).build(),
-    SpreadsheetApp.newConditionalFormatRule()
-      .whenTextEqualTo('OK').setBackground('#d4edda').setFontColor('#155724')
-      .setRanges([range]).build()
-  ];
+//   const rules = [
+//     SpreadsheetApp.newConditionalFormatRule()
+//       .whenTextEqualTo('EXPIRED').setBackground('#f8d7da').setFontColor('#721c24')
+//       .setRanges([range]).build(),
+//     SpreadsheetApp.newConditionalFormatRule()
+//       .whenTextEqualTo('EXPIRING').setBackground('#fff3cd').setFontColor('#856404')
+//       .setRanges([range]).build(),
+//     SpreadsheetApp.newConditionalFormatRule()
+//       .whenTextEqualTo('OK').setBackground('#d4edda').setFontColor('#155724')
+//       .setRanges([range]).build()
+//   ];
 
-  sheet.setConditionalFormatRules(rules);
-}
+//   sheet.setConditionalFormatRules(rules);
+// }
 
 function applyInventoryStatusColors() {
-  const sheet = SS.getSheetByName('Inventory');
+  const sheet = SS.getSheetByName(INVENTORY_SHEET);
   const statusCol = getSheetColumnIndex(COLUMN_STATUS);
   const range = sheet.getRange(2, statusCol, sheet.getLastRow() - 1);
   const rules = [
@@ -838,6 +850,53 @@ function applyInventoryStatusColors() {
 
 
 
+
+function applyInventoryStockLevelColors() {
+  const sheet = SS.getSheetByName(INVENTORY_SHEET);
+  if (!sheet) return;
+
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return;
+
+  const range = sheet.getRange(2, 1, lastRow - 1, sheet.getLastColumn());
+  const currentStockLetter = getSheetColumnLetter(getSheetColumnIndex(COLUMN_CURRENT_STOCK));
+  const reorderLevelLetter = getSheetColumnLetter(getSheetColumnIndex(COLUMN_REORDER_LEVEL));
+
+  const rules = [
+    SpreadsheetApp.newConditionalFormatRule()
+      .whenFormulaSatisfied(`=$${currentStockLetter}2=0`)
+      .setBackground('#f8d7da')
+      .setFontColor('#721c24')
+      .setRanges([range])
+      .build(),
+    SpreadsheetApp.newConditionalFormatRule()
+      .whenFormulaSatisfied(`=AND($${currentStockLetter}2>0,$${reorderLevelLetter}2>0,$${currentStockLetter}2<=MAX(1,$${reorderLevelLetter}2*0.2))`)
+      .setBackground('#ffe5b4')
+      .setFontColor('#7a4b00')
+      .setRanges([range])
+      .build(),
+    SpreadsheetApp.newConditionalFormatRule()
+      .whenFormulaSatisfied(`=AND($${currentStockLetter}2>MAX(1,$${reorderLevelLetter}2*0.2),$${reorderLevelLetter}2>0,$${currentStockLetter}2<=$${reorderLevelLetter}2)`)
+      .setBackground('#fff3cd')
+      .setFontColor('#856404')
+      .setRanges([range])
+      .build(),
+    SpreadsheetApp.newConditionalFormatRule()
+      .whenFormulaSatisfied(`=AND($${currentStockLetter}2>$${reorderLevelLetter}2,$${reorderLevelLetter}2>0,$${currentStockLetter}2<=($${reorderLevelLetter}2*1.25))`)
+      .setBackground('#d4edda')
+      .setFontColor('#155724')
+      .setRanges([range])
+      .build(),
+    SpreadsheetApp.newConditionalFormatRule()
+      .whenFormulaSatisfied(`=OR(AND($${currentStockLetter}2>$${reorderLevelLetter}2,$${reorderLevelLetter}2<=0),$${currentStockLetter}2>($${reorderLevelLetter}2*1.25))`)
+      .setBackground('#c6efce')
+      .setFontColor('#0f5132')
+      .setRanges([range])
+      .build()
+  ];
+
+  sheet.setConditionalFormatRules(rules);
+}
 // ============================================
 // HTML TEMPLATES
 // ============================================
@@ -971,9 +1030,15 @@ function getStockOutHtml() {
     const remaining = parseFloat(qty) || 0;
     if (remaining > 0 && itemId) {
       if (!batchMap[itemId]) batchMap[itemId] = [];
-      const daysLeft = expiry ? Math.floor((new Date(expiry) - today) / (1000 * 3600 * 24)) : '';
-      let expStr = expiry ? Utilities.formatDate(new Date(expiry), Session.getScriptTimeZone(), 'yyyy-MM-dd') : '';
-      batchMap[itemId].push(`${batchId} | Qty: ${remaining} | Exp: ${expStr}${daysLeft < 0 ? ' (EXPIRED!)' : daysLeft <= 7 ? ' (Expiring)' : ''}`);
+      const item = items.find(it => it.id === itemId);
+      const isNonPerishable = item && item.nonPerishable;
+      let batchStr = `${batchId} | Qty: ${remaining}`;
+      if (!isNonPerishable && expiry) {
+        const daysLeft = Math.floor((new Date(expiry) - today) / (1000 * 3600 * 24));
+        const expStr = Utilities.formatDate(new Date(expiry), Session.getScriptTimeZone(), 'yyyy-MM-dd');
+        batchStr += ` | Exp: ${expStr}${daysLeft < 0 ? ' (EXPIRED!)' : daysLeft <= 7 ? ' (Expiring)' : ''}`;
+      }
+      batchMap[itemId].push(batchStr);
     }
   }
 
